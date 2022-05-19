@@ -1,0 +1,25 @@
+{
+  "kind": "collectionType",
+  "collectionName": "bigfiles",
+  "info": {
+    "singularName": "bigfile",
+    "pluralName": "bigfiles",
+    "displayName": "bigfile",
+    "description": ""
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "fileName": {
+      "type": "string"
+    },
+    "size": {
+      "type": "biginteger"
+    },
+    "filePath": {
+      "type": "string"
+    }
+  }
+}
