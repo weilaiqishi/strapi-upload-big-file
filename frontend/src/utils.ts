@@ -33,11 +33,11 @@ export function asyncPool(arr: any, max = 2, callback = () => { }) {
             promiseArr.splice(promiseArr.indexOf(one), 1);
         });
 
-        if (promiseArr.length >= max) {  // 如果当并行数量达到最大
-            Promise.race(promiseArr).then(runOne) // // 用race等队列里有promise完成了才调用runOne
+        if (promiseArr.length >= max) { // 如果当并行数量达到最大
+            await Promise.race(promiseArr).then(runOne) // 用race等队列里有promise完成了才调用runOne
         } else {
             // 否则直接调用runOne让下一个并发入列
-            runOne()
+            await runOne()
         }
     }
 

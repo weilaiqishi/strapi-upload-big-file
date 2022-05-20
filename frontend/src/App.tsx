@@ -3,6 +3,7 @@ import { Upload, message, Button, Progress, Card, List, Spin } from 'antd';
 import { RcFile } from 'antd/lib/upload';
 import { UploadFile } from 'antd/lib/upload/interface';
 import { UploadOutlined } from '@ant-design/icons';
+import axios from 'axios'
 
 import * as utils from './utils'
 
@@ -64,7 +65,6 @@ const UpLoadComponent = () => {
       )
     })
     uploadChunks() // 执行上传切片的操作
-    setfileList([])
   }
 
   function uploadChunks() {
@@ -84,9 +84,26 @@ const UpLoadComponent = () => {
           (progressEvent: typeProgressEvent) => progressHandler(progressEvent, refFileListCooked.current[index]), // 传入监听上传进度回调
         )
       )
-    utils.asyncPool(requestList, 5, () => {
+    utils.asyncPool(requestList, 5, async () => {
+      const res = await Promise.allSettled(
+        fileList.map(
+          fileItem => axios({
+            url: 'http://localhost:1337/api/bigfile/megre',
+            method: 'POST',
+            data: { fileName: fileItem.name, size: fileItem.size },
+          })
+        )
+      )
+      const success = res.reduce((prev, cur) => {
+        console.log('uploadChunks megre res -> ',cur)
+        if (cur.status === 'fulfilled' && cur.value.data.code === 0) {
+          prev += 1
+        }
+        return prev
+      }, 0)
+      message.success(`上传成功${success}个，失败${fileList.length - success}个`)
       setuploading(false)
-      message.success('上传成功')
+      setfileList([])
     }) // 限制并发请求数量
   }
 
@@ -117,7 +134,7 @@ const UpLoadComponent = () => {
         <Card title='总进度:' style={{ width: '100%' }} headStyle={{ fontWeight: 'bold' }}>
           <Progress percent={totalProgress}></Progress>
         </Card>
-        <Card title='切片进度:' style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }} headStyle={{ fontWeight: 'bold' }} bodyStyle={{ height: '400px'  }}>
+        <Card title='切片进度:' style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }} headStyle={{ fontWeight: 'bold' }} bodyStyle={{ height: '400px' }}>
           <List style={{ overflowY: 'auto', height: '100%' }}>
             {
               refFileListCooked.current.map(item => <List.Item key={item.chunkName}>
