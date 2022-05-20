@@ -5,6 +5,7 @@
 参考文章
 
 - [「记录优化」我是如何在项目中实现大文件分片上传，暂停续传的](https://juejin.cn/post/6982877680068739085)
+- [字节跳动面试官：请你实现一个大文件上传和断点续传](https://juejin.cn/post/6844904046436843527)
 
 ## 大致流程
 
@@ -14,6 +15,8 @@
 4. 后端将此`文件夹`里的所有切片合并为完整的BGM文件
 5. 删除`文件夹`，因为`切片`不是我们最终想要的，可`删除`（可以保留进行大文件分片下载吗？）
 6. 当服务器已存在某一个文件时，再上传需要实现`“秒传”`
+
+[示例文件下载](https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/all/boxcnZ34jCyQziXxsS9NaV0zfre/?mount_point=explorer)
 
 ## 起步
 
@@ -200,8 +203,8 @@ yarn develop
 
 3.创建一个表准备用来管理大文件上传
 
-点击左侧菜单 `Content Type Builder` ，可以进行可视化创建编辑数据库表，同时生成一套增删查改接口，这个是 `strapi` 的一大特色。
-然后点击 `Create new collection type` ，输入表的名字
+这个 `strapi` 的一大特色是可以进行可视化创建编辑数据库表，同时生成一套增删查改接口。
+我们要建一个叫 `bigfile` 的表。点击左侧菜单 `Content Type Builder` ，然后点击 `Create new collection type` ，输入表的名字
 ![strapiCreateCollection](./showImg/2.2strapiCreateCollection.png)
 
 `strapi` 会默认带上一个 `起草/发布` 系统，这次不需要把它关了
@@ -234,7 +237,7 @@ Koa 提供一个 Context 对象，表示一次对话的上下文（包括 HTTP �
 可以知道 `ctx.request.files` 可以获得上传的文件对象
 然后我们利用 Node.js工具库 [fs-extra](https://github.com/jprichardson/node-fs-extra) 把文件保存到指定目录
 
-我们先写一个 `controllers`
+我们先写 bigfile 的 `controllers`
 
 > 控制器是 JavaScript 文件，其中包含一组方法，称为操作，由客户端根据请求的路由访问。每当客户端请求路由时，操作都会执行业务逻辑代码并发回响应。控制器代表模型-视图-控制器 (MVC) 模式中的 C。[文档地址](https://docs.strapi.io/developer-docs/latest/development/backend-customization/controllers.html)
 
@@ -308,7 +311,7 @@ module.exports = {
 ```
 
 `strapi` 还自带一个权限系统，接口默认是不给访问的，为了前端对接简单我们要给 `public` 开放权限
-![9strapiRole](./showImg/2.9strapiRole.png)
+![strapiRole](./showImg/2.9strapiRole.png)
 
 #### 前端
 
@@ -352,11 +355,11 @@ export function asyncPool(arr: any, max = 2, callback = () => { }) {
             promiseArr.splice(promiseArr.indexOf(one), 1);
         });
 
-        if (promiseArr.length >= max) {  // 如果当并行数量达到最大
-            Promise.race(promiseArr).then(runOne) // // 用race等队列里有promise完成了才调用runOne
+        if (promiseArr.length >= max) { // 如果当并行数量达到最大
+            await Promise.race(promiseArr).then(runOne) // 用race等队列里有promise完成了才调用runOne
         } else {
             // 否则直接调用runOne让下一个并发入列
-            runOne()
+            await runOne()
         }
     }
 
@@ -412,7 +415,402 @@ export function asyncPool(arr: any, max = 2, callback = () => { }) {
 最后写一下进度条UI
 ![进度条UI](./showImg/2.12frontUpload.png)
 
+完整的 `frontend/src/App/tsx` 如下
+
+```tsx
+import React, { useState, useRef } from 'react';
+import { Upload, message, Button, Progress, Card, List, Spin } from 'antd';
+import { RcFile } from 'antd/lib/upload';
+import { UploadFile } from 'antd/lib/upload/interface';
+import { UploadOutlined } from '@ant-design/icons';
+
+import * as utils from './utils'
+
+import './App.css';
+
+function createChunk(file: RcFile, size = 5 * 1024 * 1024) {
+  const chunkList: {
+    file: Blob;
+  }[] = []
+  let cur = 0
+  while (cur < file.size) {
+    chunkList.push({ file: file.slice(cur, cur + size) }) // 使用slice方法切片
+    cur += size
+  }
+  return chunkList
+}
+
+const UpLoadComponent = () => {
+  const [uploading, setuploading] = useState(false)
+  const [fileList, setfileList] = useState<RcFile[]>([])
+  const beforeUpload = (selectFile: RcFile, selectFileList: RcFile[]) => { // 选中文件
+    setfileList([...fileList, ...selectFileList])
+  };
+  const onRemove = (file: UploadFile) => { // 移除选中
+    const index = fileList.indexOf(file as RcFile);
+    const newFileList = fileList.slice();
+    newFileList.splice(index, 1);
+    setfileList(newFileList)
+  }
+
+  type typeFileListCookedItem = {
+    file: Blob
+    size: number
+    percent: number
+    chunkName: string
+    fileName: string
+  }
+  type typeProgressEvent = {
+    total: number
+    loaded: number
+  }
+  const refFileListCooked = useRef<typeFileListCookedItem[]>([])
+  const [totalProgress, settotalProgress] = useState(0)
+  const handleUpload = () => { // 正式上传
+    if (!fileList.length) return
+    refFileListCooked.current = []
+    settotalProgress(0)
+    fileList.forEach(fileItem => {
+      const chunkList = createChunk(fileItem)
+      console.log(`handleUpload -> ${fileItem.name} chunkList -> `, chunkList) // 看看chunkList长什么样子
+      refFileListCooked.current.push( // 处理切片信息
+        ...chunkList.map(({ file }, index) => ({
+          file,
+          size: file.size,
+          percent: 0,
+          chunkName: `${fileItem.name}-${index}`,
+          fileName: fileItem.name,
+        }))
+      )
+    })
+    uploadChunks() // 执行上传切片的操作
+  }
+
+  function uploadChunks() {
+    setuploading(true)
+    const requestList = refFileListCooked.current
+      .map(({ file, fileName, chunkName }) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('fileName', fileName);
+        formData.append('chunkName', chunkName);
+        return { formData };
+      })
+      .map(({ formData }, index) =>
+        () => utils.axiosUpload(
+          'http://localhost:1337/api/bigfile/upload',
+          formData,
+          (progressEvent: typeProgressEvent) => progressHandler(progressEvent, refFileListCooked.current[index]), // 传入监听上传进度回调
+        )
+      )
+    utils.asyncPool(requestList, 5, () => {
+      setuploading(false)
+      message.success('上传成功')
+    }) // 限制并发请求数量
+  }
+
+  function progressHandler(progressEvent: typeProgressEvent, fileListCookedItem: typeFileListCookedItem) {
+    fileListCookedItem.percent = Math.floor((progressEvent.loaded / progressEvent.total) * 100)
+    settotalProgress(
+      Math.floor(
+        refFileListCooked.current.reduce((acc, cur) => acc + cur.percent, 0) / refFileListCooked.current.length
+      )
+    )
+  }
+
+  return (
+    <>
+      <Upload fileList={fileList} beforeUpload={beforeUpload} onRemove={onRemove} customRequest={() => { }} multiple>
+        <Button style={{ width: '200px' }} icon={<UploadOutlined />} loading={uploading} disabled={uploading}>Select File</Button>
+      </Upload>
+      <Button
+        type='primary'
+        onClick={handleUpload}
+        style={{ marginTop: 16, width: '200px' }}
+        loading={uploading}
+        disabled={uploading}
+      >
+        {uploading ? 'Uploading' : 'Start Upload'}
+      </Button>
+      <div style={{ display: 'flex', flexDirection: 'column', marginTop: 16, width: '600px', height: '600px' }}>
+        <Card title='总进度:' style={{ width: '100%' }} headStyle={{ fontWeight: 'bold' }}>
+          <Progress percent={totalProgress}></Progress>
+        </Card>
+        <Card title='切片进度:' style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }} headStyle={{ fontWeight: 'bold' }} bodyStyle={{ height: '400px' }}>
+          <List style={{ overflowY: 'auto', height: '100%' }}>
+            {
+              refFileListCooked.current.map(item => <List.Item key={item.chunkName}>
+                <List.Item.Meta title={item.chunkName + ':'} description={<Progress percent={item.percent}></Progress>}></List.Item.Meta>
+              </List.Item>
+              )
+            }
+          </List>
+        </Card>
+      </div>
+    </>
+  )
+}
+
+function App() {
+  return (
+    <div className='App'>
+      <header className='App-header'>
+        <UpLoadComponent></UpLoadComponent>
+      </header>
+    </div>
+  );
+}
+
+export default App;
+
+```
+
 选择一个视频上传一下
 可以看到后台指定目录多了一堆文件
 ![frontUploaded](./showImg/2.13frontUploaded.png)
 ![trapiUploadFilePath](./showImg/2.8uploadTest.png)
+
+### 合并切片
+
+现在我们已经可以保存所有切片了，接下来就要开始合并切片，前端会发一个/merge请求，叫后端合并这些切片
+
+服务端处理
+
+我们在 `public/uploads` 目录下创建 `bigfile/megre` 文件夹用来存放合并的大文件
+在 `bigfile` 的 `controller` 里面加一个 `merge` 方法
+
+`backend/src/api/bigfile/controllers/bigfile.js`
+
+```js
+const UPLOAD_DIR_MEGRE = path.resolve(__dirname, '../../../../public/uploads/bigfile/megre') // 切片存储目录
+...
+    async megre (ctx) {
+        const pipeStream = (path, writeStream) => {
+            console.log('path', path)
+            return new Promise(resolve => {
+                const readStream = fse.createReadStream(path)
+                readStream.on("end", () => {
+                    fse.unlinkSync(path)
+                    resolve()
+                })
+                readStream.pipe(writeStream)
+            })
+        }
+
+        const mergeFileChunk = async (fileName, size) => { // 合并切片
+            const chunkDir = path.resolve(UPLOAD_DIR, `${fileName}-chunks`)
+            let chunkPaths = null
+            chunkPaths = await fse.readdir(chunkDir) // 获取切片文件夹里所有切片，返回一个数组
+            // 根据切片下标进行排序 否则直接读取目录的获得的顺序可能会错乱
+            chunkPaths.sort((a, b) => a.split("-")[1] - b.split("-")[1])
+            const arr = chunkPaths.map((chunkPath, index) => {
+                return pipeStream(
+                    path.resolve(chunkDir, chunkPath),
+                    // 指定位置创建可写流
+                    fse.createWriteStream(path.resolve(UPLOAD_DIR, fileName), {
+                        start: index * size,
+                        end: (index + 1) * size
+                    })
+                )
+            })
+            await Promise.all(arr)
+            fse.rmdirSync(chunkDir); // 合并后删除保存切片的目录
+        }
+
+        const { fileName, size } = ctx.request.body
+        await mergeFileChunk(fileName, size)
+    }
+...
+```
+
+`backend/src/api/bigfile/routes/bigfile.js`
+
+```js
+        {
+            method: 'POST',
+            path: '/bigfile/megre',
+            handler: 'bigfile.megre',
+            config: {
+                auth: false,
+            },
+        }
+```
+
+同样的给 `public` 开放权限
+![strapiRole](./showImg/3.1strapiRole.png)
+
+前端处理
+
+在 `frontend/src/App.tsx` 中引入 `axios`
+改写上传切片方法，等切片都上传完后调用一下 `megre` api
+![2frontMegreApi](./showImg/3.2frontMegreApi.png)
+完整代码如下
+
+```tsx
+import React, { useState, useRef } from 'react';
+import { Upload, message, Button, Progress, Card, List, Spin } from 'antd';
+import { RcFile } from 'antd/lib/upload';
+import { UploadFile } from 'antd/lib/upload/interface';
+import { UploadOutlined } from '@ant-design/icons';
+import axios from 'axios'
+
+import * as utils from './utils'
+
+import './App.css';
+
+function createChunk(file: RcFile, size = 5 * 1024 * 1024) {
+  const chunkList: {
+    file: Blob;
+  }[] = []
+  let cur = 0
+  while (cur < file.size) {
+    chunkList.push({ file: file.slice(cur, cur + size) }) // 使用slice方法切片
+    cur += size
+  }
+  return chunkList
+}
+
+const UpLoadComponent = () => {
+  const [uploading, setuploading] = useState(false)
+  const [fileList, setfileList] = useState<RcFile[]>([])
+  const beforeUpload = (selectFile: RcFile, selectFileList: RcFile[]) => { // 选中文件
+    setfileList([...fileList, ...selectFileList])
+  };
+  const onRemove = (file: UploadFile) => { // 移除选中
+    const index = fileList.indexOf(file as RcFile);
+    const newFileList = fileList.slice();
+    newFileList.splice(index, 1);
+    setfileList(newFileList)
+  }
+
+  type typeFileListCookedItem = {
+    file: Blob
+    size: number
+    percent: number
+    chunkName: string
+    fileName: string
+  }
+  type typeProgressEvent = {
+    total: number
+    loaded: number
+  }
+  const refFileListCooked = useRef<typeFileListCookedItem[]>([])
+  const [totalProgress, settotalProgress] = useState(0)
+  const handleUpload = () => { // 正式上传
+    if (!fileList.length) return
+    refFileListCooked.current = []
+    settotalProgress(0)
+    fileList.forEach(fileItem => {
+      const chunkList = createChunk(fileItem)
+      console.log(`handleUpload -> ${fileItem.name} chunkList -> `, chunkList) // 看看chunkList长什么样子
+      refFileListCooked.current.push( // 处理切片信息
+        ...chunkList.map(({ file }, index) => ({
+          file,
+          size: file.size,
+          percent: 0,
+          chunkName: `${fileItem.name}-${index}`,
+          fileName: fileItem.name,
+        }))
+      )
+    })
+    uploadChunks() // 执行上传切片的操作
+  }
+
+  function uploadChunks() {
+    setuploading(true)
+    const requestList = refFileListCooked.current
+      .map(({ file, fileName, chunkName }) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('fileName', fileName);
+        formData.append('chunkName', chunkName);
+        return { formData };
+      })
+      .map(({ formData }, index) =>
+        () => utils.axiosUpload(
+          'http://localhost:1337/api/bigfile/upload',
+          formData,
+          (progressEvent: typeProgressEvent) => progressHandler(progressEvent, refFileListCooked.current[index]), // 传入监听上传进度回调
+        )
+      )
+    utils.asyncPool(requestList, 5, async () => {
+      const res = await Promise.allSettled(
+        fileList.map(
+          fileItem => axios({
+            url: 'http://localhost:1337/api/bigfile/megre',
+            method: 'POST',
+            data: { fileName: fileItem.name, size: fileItem.size },
+          })
+        )
+      )
+      const success = res.reduce((prev, cur) => {
+        console.log('uploadChunks megre res -> ',cur)
+        if (cur.status === 'fulfilled' && cur.value.data.code === 0) {
+          prev += 1
+        }
+        return prev
+      }, 0)
+      message.success(`上传成功${success}个，失败${fileList.length - success}个`)
+      setuploading(false)
+      setfileList([])
+    }) // 限制并发请求数量
+  }
+
+  function progressHandler(progressEvent: typeProgressEvent, fileListCookedItem: typeFileListCookedItem) {
+    fileListCookedItem.percent = Math.floor((progressEvent.loaded / progressEvent.total) * 100)
+    settotalProgress(
+      Math.floor(
+        refFileListCooked.current.reduce((acc, cur) => acc + cur.percent, 0) / refFileListCooked.current.length
+      )
+    )
+  }
+
+  return (
+    <>
+      <Upload fileList={fileList} beforeUpload={beforeUpload} onRemove={onRemove} customRequest={() => { }} multiple>
+        <Button style={{ width: '200px' }} icon={<UploadOutlined />} loading={uploading} disabled={uploading}>Select File</Button>
+      </Upload>
+      <Button
+        type='primary'
+        onClick={handleUpload}
+        style={{ marginTop: 16, width: '200px' }}
+        loading={uploading}
+        disabled={uploading}
+      >
+        {uploading ? 'Uploading' : 'Start Upload'}
+      </Button>
+      <div style={{ display: 'flex', flexDirection: 'column', marginTop: 16, width: '600px', height: '600px' }}>
+        <Card title='总进度:' style={{ width: '100%' }} headStyle={{ fontWeight: 'bold' }}>
+          <Progress percent={totalProgress}></Progress>
+        </Card>
+        <Card title='切片进度:' style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }} headStyle={{ fontWeight: 'bold' }} bodyStyle={{ height: '400px' }}>
+          <List style={{ overflowY: 'auto', height: '100%' }}>
+            {
+              refFileListCooked.current.map(item => <List.Item key={item.chunkName}>
+                <List.Item.Meta title={item.chunkName + ':'} description={<Progress percent={item.percent}></Progress>}></List.Item.Meta>
+              </List.Item>
+              )
+            }
+          </List>
+        </Card>
+      </div>
+    </>
+  )
+}
+
+function App() {
+  return (
+    <div className='App'>
+      <header className='App-header'>
+        <UpLoadComponent></UpLoadComponent>
+      </header>
+    </div>
+  );
+}
+
+export default App;
+
+```
+
+再上传一次文件，可以看到完整的文件出现在了指定目录
+![3strapiMegreFile](./showImg/3.3strapiMegreFile.png)

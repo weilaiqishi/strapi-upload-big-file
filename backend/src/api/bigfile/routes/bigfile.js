@@ -13,6 +13,14 @@ module.exports = {
             config: {
                 auth: false,
             },
+        },
+        {
+            method: 'POST',
+            path: '/bigfile/megre',
+            handler: 'bigfile.megre',
+            config: {
+                auth: false,
+            },
         }
     ]
 }

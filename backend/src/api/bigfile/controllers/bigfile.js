@@ -10,6 +10,7 @@ const utils = require('@strapi/utils')
 const path = require('path')
 const fse = require('fs-extra')
 const UPLOAD_DIR = path.resolve(__dirname, '../../../../public/uploads/bigfile/chunk') // 切片存储目录
+const UPLOAD_DIR_MEGRE = path.resolve(__dirname, '../../../../public/uploads/bigfile/megre') // 切片存储目录
 
 module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
     async upload (ctx) {
@@ -34,4 +35,43 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
             errMessage: ''
         }
     },
+    async megre (ctx) {
+        const pipeStream = (path, writeStream) => {
+            return new Promise(resolve => {
+                const readStream = fse.createReadStream(path)
+                readStream.on("end", () => {
+                    fse.unlinkSync(path)
+                    resolve()
+                })
+                readStream.pipe(writeStream)
+            })
+        }
+
+        const mergeFileChunk = async (fileName, size) => { // 合并切片
+            const chunkDir = path.resolve(UPLOAD_DIR, `${fileName}-chunks`)
+            let chunkPaths = null
+            chunkPaths = await fse.readdir(chunkDir) // 获取切片文件夹里所有切片，返回一个数组
+            // 根据切片下标进行排序 否则直接读取目录的获得的顺序可能会错乱
+            chunkPaths.sort((a, b) => a.split("-")[1] - b.split("-")[1])
+            const arr = chunkPaths.map((chunkPath, index) => {
+                return pipeStream(
+                    path.resolve(chunkDir, chunkPath),
+                    // 指定位置创建可写流
+                    fse.createWriteStream(path.resolve(UPLOAD_DIR_MEGRE, fileName), {
+                        start: index * size,
+                        end: (index + 1) * size
+                    })
+                )
+            })
+            await Promise.all(arr)
+            fse.rmdirSync(chunkDir); // 合并后删除保存切片的目录
+        }
+
+        const { fileName, size } = ctx.request.body
+        await mergeFileChunk(fileName, size)
+        return {
+            code: 0,
+            errMessage: ''
+        }
+    }
 }))
