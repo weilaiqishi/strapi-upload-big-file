@@ -1,11 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { Upload, message, Button, Progress, Card, List, Spin } from 'antd';
+import { Upload, message, Button, Progress, Card, List, Drawer, Table } from 'antd';
 import { RcFile } from 'antd/lib/upload';
 import { UploadFile } from 'antd/lib/upload/interface';
-import { UploadOutlined } from '@ant-design/icons';
+import { UploadOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import axios from 'axios'
+import { useAntdTable, useEventEmitter } from 'ahooks'
+import { EventEmitter } from 'ahooks/lib/useEventEmitter'
 
 import * as utils from './utils'
+import * as strapiApi from './strapiApi'
 
 import './App.css';
 
@@ -21,7 +24,7 @@ function createChunk(file: RcFile, size = 5 * 1024 * 1024) {
   return chunkList
 }
 
-const UpLoadComponent = () => {
+const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
   const [uploading, setuploading] = useState(false)
   const [fileList, setfileList] = useState<RcFile[]>([])
   const beforeUpload = (selectFile: RcFile, selectFileList: RcFile[]) => { // 选中文件
@@ -90,12 +93,12 @@ const UpLoadComponent = () => {
           fileItem => axios({
             url: 'http://localhost:1337/api/bigfile/megre',
             method: 'POST',
-            data: { fileName: fileItem.name, size: fileItem.size },
+            data: { fileName: fileItem.name, size: fileItem.size, chunkSize: 5 * 1024 * 1024 },
           })
         )
       )
       const success = res.reduce((prev, cur) => {
-        console.log('uploadChunks megre res -> ',cur)
+        console.log('uploadChunks megre res -> ', cur)
         if (cur.status === 'fulfilled' && cur.value.data.code === 0) {
           prev += 1
         }
@@ -104,6 +107,7 @@ const UpLoadComponent = () => {
       message.success(`上传成功${success}个，失败${fileList.length - success}个`)
       setuploading(false)
       setfileList([])
+      eventBus.emit({ type: 'uploaded' })
     }) // 限制并发请求数量
   }
 
@@ -149,12 +153,72 @@ const UpLoadComponent = () => {
   )
 }
 
+const BigfileList = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
+  const [visible, setVisible] = useState(false)
+  const showDrawer = () => {
+    setVisible(true)
+  }
+  const onClose = () => {
+    setVisible(false)
+  }
+  const { tableProps } = useAntdTable(
+    ({ current, pageSize }) =>
+      strapiApi.strapiNoticeList({ page: current, pageSize })
+        .then(res => ({
+          list: res.data.map(item => ({
+            id: item.id,
+            ...item.attributes
+          })),
+          total: res.meta.pagination.total
+        }))
+  )
+
+  eventBus.useSubscription((val) => {
+    console.log(val)
+    if(val?.type === 'uploaded') {
+      tableProps.onChange({ current: 1 })
+    }
+  })
+
+  const columns = [
+    {
+      title: 'id',
+      dataIndex: ['id'],
+    },
+    {
+      title: 'fileName',
+      dataIndex: 'fileName',
+    },
+    {
+      title: 'actioin',
+      key: 'action',
+      render: (text: any, record: any) => (
+        <a style={{ color: '#40a9ff' }} href={'http://localhost:1337' + record.filePath}>下载</a>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <UnorderedListOutlined
+        onClick={showDrawer}
+        style={{ position: 'absolute', top: '50px', right: '50px', fontSize: '30px', color: '#FFFFFF' }}
+      />
+      <Drawer title='文件列表' placement='right' onClose={onClose} visible={visible}>
+        <Table columns={columns} rowKey='id' {...tableProps} style={{ height: '100%' }} />
+      </Drawer>
+    </>
+  )
+}
+
 function App() {
+  const eventBus = useEventEmitter()
   return (
     <div className='App'>
       <header className='App-header'>
-        <UpLoadComponent></UpLoadComponent>
+        <UpLoadComponent eventBus={eventBus}></UpLoadComponent>
       </header>
+      <BigfileList eventBus={eventBus}></BigfileList>
     </div>
   );
 }

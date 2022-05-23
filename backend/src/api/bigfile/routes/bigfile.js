@@ -21,6 +21,12 @@ module.exports = {
             config: {
                 auth: false,
             },
-        }
+        },
+        {
+            method: 'GET',
+            path: `/bigfiles`,
+            handler: `bigfile.find`,
+            config: {},
+        },
     ]
 }

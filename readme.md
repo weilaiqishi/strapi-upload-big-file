@@ -6,6 +6,7 @@
 
 - [「记录优化」我是如何在项目中实现大文件分片上传，暂停续传的](https://juejin.cn/post/6982877680068739085)
 - [字节跳动面试官：请你实现一个大文件上传和断点续传](https://juejin.cn/post/6844904046436843527)
+- [字节跳动面试官，我也实现了大文件上传和断点续传](https://juejin.cn/post/6844904055819468808)
 
 ## 大致流程
 
@@ -203,8 +204,12 @@ yarn develop
 
 3.创建一个表准备用来管理大文件上传
 
-这个 `strapi` 的一大特色是可以进行可视化创建编辑数据库表，同时生成一套增删查改接口。
-我们要建一个叫 `bigfile` 的表。点击左侧菜单 `Content Type Builder` ，然后点击 `Create new collection type` ，输入表的名字
+在 `strapi内容类型构建器` 中，管理员可以创建和管理内容类型：集合类型和单一类型以及组件。
+集合类型是可以管理多个条目的内容类型。
+单一类型是只能管理一个条目的内容类型。
+组件是一种可用于多种集合类型和单一类型的数据结构。
+创建 `strapi内容类型` 同时会生成一套增删查改接口、创建数据库表。
+我们要建一个叫 `bigfile` 的 `内容类型`。点击左侧菜单 `Content Type Builder` ，然后点击 `Create new collection type` ，输入名字
 ![strapiCreateCollection](./showImg/2.2strapiCreateCollection.png)
 
 `strapi` 会默认带上一个 `起草/发布` 系统，这次不需要把它关了
@@ -586,10 +591,9 @@ const UPLOAD_DIR_MEGRE = path.resolve(__dirname, '../../../../public/uploads/big
 ...
     async megre (ctx) {
         const pipeStream = (path, writeStream) => {
-            console.log('path', path)
             return new Promise(resolve => {
                 const readStream = fse.createReadStream(path)
-                readStream.on("end", () => {
+                readStream.on('end', () => {
                     fse.unlinkSync(path)
                     resolve()
                 })
@@ -597,28 +601,28 @@ const UPLOAD_DIR_MEGRE = path.resolve(__dirname, '../../../../public/uploads/big
             })
         }
 
-        const mergeFileChunk = async (fileName, size) => { // 合并切片
-            const chunkDir = path.resolve(UPLOAD_DIR, `${fileName}-chunks`)
+        const mergeFileChunk = async (fileName, chunkSize) => { // 合并切片
             let chunkPaths = null
+            const chunkDir = path.resolve(UPLOAD_DIR, `${fileName}-chunks`)
             chunkPaths = await fse.readdir(chunkDir) // 获取切片文件夹里所有切片，返回一个数组
             // 根据切片下标进行排序 否则直接读取目录的获得的顺序可能会错乱
-            chunkPaths.sort((a, b) => a.split("-")[1] - b.split("-")[1])
+            chunkPaths.sort((a, b) => a.split('-')[1] - b.split('-')[1])
             const arr = chunkPaths.map((chunkPath, index) => {
                 return pipeStream(
                     path.resolve(chunkDir, chunkPath),
                     // 指定位置创建可写流
-                    fse.createWriteStream(path.resolve(UPLOAD_DIR, fileName), {
-                        start: index * size,
-                        end: (index + 1) * size
+                    fse.createWriteStream(path.resolve(UPLOAD_DIR_MEGRE, fileName), {
+                        start: index * chunkSize,
+                        end: (index + 1) * chunkSize,
                     })
                 )
             })
             await Promise.all(arr)
-            fse.rmdirSync(chunkDir); // 合并后删除保存切片的目录
+            fse.rmdirSync(chunkDir) // 合并后删除保存切片的目录
         }
 
-        const { fileName, size } = ctx.request.body
-        await mergeFileChunk(fileName, size)
+        const { fileName, size, chunkSize } = ctx.request.body
+        await mergeFileChunk(fileName, chunkSize)
     }
 ...
 ```
@@ -739,7 +743,7 @@ const UpLoadComponent = () => {
           fileItem => axios({
             url: 'http://localhost:1337/api/bigfile/megre',
             method: 'POST',
-            data: { fileName: fileItem.name, size: fileItem.size },
+            data: { fileName: fileItem.name, size: fileItem.size, chunkSize: 5 * 1024 * 1024 },
           })
         )
       )
@@ -813,4 +817,165 @@ export default App;
 ```
 
 再上传一次文件，可以看到完整的文件出现在了指定目录
-![3strapiMegreFile](./showImg/3.3strapiMegreFile.png)
+![strapiMegreFile](./showImg/3.3strapiMegreFile.png)
+
+### 文件列表
+
+现在我们加一个小功能，就是把上传文件的记录存到数据库，
+前端就可以请求文件列表，下载服务端上的文件
+
+依旧先处理服务端
+
+`Strapi` 提供建立在查询引擎 API 之上的实体服务 API。实体服务是处理 Strapi 的复杂数据结构（如组件和动态区域）的层，
+并在底层使用查询引擎 API 来执行数据库查询。[指南](https://docs.strapi.io/developer-docs/latest/developer-resources/database-apis-reference/entity-service-api.html)
+我们改一下 `megre` 方法，利用 `strapi` 提供的API往数据库里存数据
+`backend/src/api/bigfile/controllers/bigfile/js`
+![strapiMegreSaveRecord](./showImg/4.1strapiMegreSaveRecord.png)
+
+`strapi内容类型` 自带核心路由器（即 find、findOne、create、update 和 delete）对应于 Strapi 在创建新内容类型时自动创建的默认路由，同样的也有默认控制器和操作，
+所以我们可以白嫖一个查询列表接口
+`backend/src/api/bigfile/routes/bigfile/js`
+
+```js
+        {
+            method: 'GET',
+            path: `/bigfiles`,
+            handler: `bigfile.find`,
+            config: {},
+        },
+```
+
+接口开放权限
+![strapiRole](./showImg/4.2strapiRole.png)
+
+前端对接文件列表接口，写一个 `文件列表组件` ，需要用到新依赖 `ahooks`
+
+```bash
+yarn add ahooks eventemitter3
+```
+
+对接 `strapi` 接口
+`frontend/src/strapiApi.ts`
+
+```ts
+import qs from 'qs'
+import axios from 'axios'
+
+export type typePagination = {
+    page: number, pageSize: number
+}
+
+export type typeStrapiFind<T> = {
+    data: T[],
+    meta: {
+        pagination: {
+            page: number,
+            pageCount: number,
+            pageSize: number,
+            total: number
+        }
+    }
+}
+
+export type typeStrapiEntity<T> = {
+    attributes: T & {
+        createdAt: string,
+        updatedAt: string,
+        publishedAt?: string,
+    }
+    id: number
+}
+
+type typeStrapiEntityBigfile = typeStrapiEntity<{
+    text: string
+}>
+export const strapiNoticeList = async (
+    { page, pageSize }:
+        Partial<typePagination>
+): Promise<typeStrapiFind<typeStrapiEntityBigfile>> => {
+    const queryOption = {
+        populate: '*',
+        pagination: {
+            page: page || 1,
+            pageSize: pageSize || 10
+        },
+        sort: ['createdAt:desc']
+    }
+    const query = qs.stringify(queryOption, {
+        encodeValuesOnly: true
+    })
+    const res = await axios.request<typeStrapiFind<typeStrapiEntityBigfile>>({
+        url: `http://localhost:1337/api/bigfiles?${query}`
+    })
+    return res.data
+}
+```
+
+`App.tsx` 中导入api文件， 写一个文件列表组件
+![front](./showImg/4.3front.png)
+![front](./showImg/4.4front.png)
+
+```tsx
+const BigfileList = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
+  const [visible, setVisible] = useState(false)
+  const showDrawer = () => {
+    setVisible(true)
+  }
+  const onClose = () => {
+    setVisible(false)
+  }
+  const { tableProps } = useAntdTable(
+    ({ current, pageSize }) =>
+      strapiApi.strapiNoticeList({ page: current, pageSize })
+        .then(res => ({
+          list: res.data.map(item => ({
+            id: item.id,
+            ...item.attributes
+          })),
+          total: res.meta.pagination.total
+        }))
+  )
+
+  eventBus.useSubscription((val) => {
+    console.log(val)
+    if(val?.type === 'uploaded') {
+      tableProps.onChange({ current: 1 })
+    }
+  })
+
+  const columns = [
+    {
+      title: 'id',
+      dataIndex: ['id'],
+    },
+    {
+      title: 'fileName',
+      dataIndex: 'fileName',
+    },
+    {
+      title: 'actioin',
+      key: 'action',
+      render: (text: any, record: any) => (
+        <a style={{ color: '#40a9ff' }} href={'http://localhost:1337' + record.filePath}>下载</a>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <UnorderedListOutlined
+        onClick={showDrawer}
+        style={{ position: 'absolute', top: '50px', right: '50px', fontSize: '30px', color: '#FFFFFF' }}
+      />
+      <Drawer title='文件列表' placement='right' onClose={onClose} visible={visible}>
+        <Table columns={columns} rowKey='id' {...tableProps} style={{ height: '100%' }} />
+      </Drawer>
+    </>
+  )
+}
+```
+
+![front](./showImg/4.5front.png)
+把服务端之前上传的文件都删了，再前端重新上传一遍
+![front](./showImg/4.6frontFileList.png)
+可以看到文件列表已经好了
