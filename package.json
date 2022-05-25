@@ -1,10 +1,14 @@
 {
   "devDependencies": {
+    "@types/spark-md5": "^3.0.2",
     "cz-conventional-changelog": "^3.3.0"
   },
   "config": {
     "commitizen": {
       "path": "./node_modules/cz-conventional-changelog"
     }
+  },
+  "dependencies": {
+    "spark-md5": "^3.0.2"
   }
 }

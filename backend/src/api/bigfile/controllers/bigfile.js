@@ -67,7 +67,7 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
             fse.rmdirSync(chunkDir) // 合并后删除保存切片的目录
         }
 
-        const { fileName, size, chunkSize } = ctx.request.body
+        const { fileName, size, chunkSize, hashMd5 } = ctx.request.body
         await mergeFileChunk(fileName, chunkSize)
 
         // 保存文件记录
@@ -81,7 +81,8 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
         if (sameBigFileRecord) {
             bigFileRecord = await strapi.entityService.update('api::bigfile.bigfile', sameBigFileRecord.id, {
                 data: {
-                    size
+                    size,
+                    hashMd5
                 },
             })
         } else {
@@ -89,7 +90,8 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
                 data: {
                     fileName,
                     size,
-                    filePath: '/uploads/bigfile/megre/' + fileName
+                    filePath: '/uploads/bigfile/megre/' + fileName,
+                    hashMd5
                 }
             })
         }
@@ -100,6 +102,28 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
             errMessage: '',
             data: {
                 bigFileRecord: sanitizedEntity
+            }
+        }
+    },
+    async verify (ctx) {
+        const { fileName, hashMd5 } = ctx.request.body
+        const [sameBigFileRecord] = await strapi.entityService.findMany('api::bigfile.bigfile', {
+            filters: {
+                fileName
+            }
+        })
+        strapi.log.info('>>> verify -> sameBigFileRecord -> ' + JSON.stringify(sameBigFileRecord))
+        let hasSameFile = false
+        if (sameBigFileRecord) {
+            if (sameBigFileRecord.hashMd5 === hashMd5) {
+                hasSameFile = true
+            }
+        }
+        return {
+            code: 0,
+            errMessage: '',
+            data: {
+                hasSameFile
             }
         }
     }

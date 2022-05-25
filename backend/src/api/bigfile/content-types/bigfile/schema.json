@@ -13,13 +13,17 @@
   "pluginOptions": {},
   "attributes": {
     "fileName": {
-      "type": "string"
+      "type": "string",
+      "unique": true
     },
     "size": {
       "type": "biginteger"
     },
     "filePath": {
       "type": "string"
+    },
+    "hashMd5": {
+      "type": "text"
     }
   }
 }

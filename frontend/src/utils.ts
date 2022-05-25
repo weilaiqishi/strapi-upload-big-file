@@ -1,4 +1,4 @@
-import axios, { AxiosRequestConfig } from 'axios';
+import axios, { AxiosRequestConfig } from 'axios'
 import { useState, useRef, useEffect } from 'react'
 
 export function axiosUpload(
@@ -43,5 +43,20 @@ export function asyncPool(arr: any, max = 2, callback = () => { }) {
 
     runOne().then(() => Promise.all(promiseArr)).then(() => { // arr循环完后 现在promiseArr里面剩下最后max个promise对象 使用all等待所有的都完成之后执行callback
         callback()
+    })
+}
+
+export async function calculateHash(file: Blob, fileName: string, chunkSize = 5 * 1024 * 1024) {
+    return new Promise<string>(resolve => {
+            // web-worker 防止卡顿主线程
+            const worker = new Worker('/hash.js')
+            worker.postMessage({ file, chunkSize })
+            worker.onmessage = e => {
+              const hashMd5: string = e.data.hashMd5
+              if (hashMd5) {
+                resolve(hashMd5)
+                worker.terminate()
+              }
+            }
     })
 }

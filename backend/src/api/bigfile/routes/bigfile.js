@@ -28,5 +28,13 @@ module.exports = {
             handler: `bigfile.find`,
             config: {},
         },
+        {
+            method: 'POST',
+            path: '/bigfile/verify',
+            handler: 'bigfile.verify',
+            config: {
+                auth: false
+            },
+        },
     ]
 }

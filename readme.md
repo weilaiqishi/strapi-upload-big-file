@@ -979,3 +979,170 @@ const BigfileList = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
 把服务端之前上传的文件都删了，再前端重新上传一遍
 ![front](./showImg/4.6frontFileList.png)
 可以看到文件列表已经好了
+
+### 秒传功能
+
+我们把文件上传到服务端之前，先请求一下 `verify` 接口，
+判断文件是否已经存在，如果已存在就不需要再切片上传了。
+
+这个判断的依据是对文件进行 `抽样hash`，计算文件 `md5` 值，`md5`值相同则存在。相比于计算全量md5，抽样md5的耗时会少很多。细节请看[字节跳动面试官，我也实现了大文件上传和断点续传](https://juejin.cn/post/6844904055819468808#heading-4)
+![抽样hash](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2020/2/3/170087549c9b69b5~tplv-t2oaga2asx-zoom-in-crop-mark:1304:0:0:0.awebp)
+
+而且我们还要通过 `web-workder`去执行这个任务，不然在主线程上进行大量的计算会造成页面卡顿。
+
+先修改一下服务端
+
+给 `strapi内容类型` bigfile添加一个hashMd5长文本字段
+![strapiCollectionAddFiled](./showImg/5.1strapiCollectionAddFiled.png)
+
+在 `merge` 合并切片接口中后端要把前端计算好的文件md5存到数据库里
+在 `verify` 验证是否有相同文件接口中就简单的从数据库查找文件名相同的记录进而对比md5值
+`backend/src/api/bigfile/controllers`
+
+```js
+    async megre (ctx) {
+        ...
+        const { fileName, size, chunkSize, hashMd5 } = ctx.request.body
+        await mergeFileChunk(fileName, chunkSize)
+
+        // 保存文件记录
+        const [sameBigFileRecord] = await strapi.entityService.findMany('api::bigfile.bigfile', { // 查询相同的文件名 目前没给文件起hash名 后来的会覆盖前面的文件
+            filters: {
+                fileName
+            }
+        })
+        strapi.log.info('>>> megre -> sameBigFileRecord -> ' + JSON.stringify(sameBigFileRecord))
+        let bigFileRecord
+        if (sameBigFileRecord) {
+            bigFileRecord = await strapi.entityService.update('api::bigfile.bigfile', sameBigFileRecord.id, {
+                data: {
+                    size,
+                    hashMd5
+                },
+            })
+        } else {
+            bigFileRecord = await strapi.entityService.create('api::bigfile.bigfile', {
+                data: {
+                    fileName,
+                    size,
+                    filePath: '/uploads/bigfile/megre/' + fileName,
+                    hashMd5
+                }
+            })
+        }
+        ...
+    },
+    async verify (ctx) {
+        const { fileName, hashMd5 } = ctx.request.body
+        const [sameBigFileRecord] = await strapi.entityService.findMany('api::bigfile.bigfile', {
+            filters: {
+                fileName
+            }
+        })
+        strapi.log.info('>>> verify -> sameBigFileRecord -> ' + JSON.stringify(sameBigFileRecord))
+        let hasSameFile = false
+        if (sameBigFileRecord) {
+            if (sameBigFileRecord.hashMd5 === hashMd5) {
+                hasSameFile = true
+            }
+        }
+        return {
+            code: 0,
+            errMessage: '',
+            data: {
+                hasSameFile
+            }
+        }
+    }
+```
+
+处理一下后端路由和权限
+`backend/src/api/bigfile/routes`
+
+```js
+        {
+            method: 'POST',
+            path: '/bigfile/verify',
+            handler: 'bigfile.verify',
+            config: {
+                auth: false
+            },
+        },
+```
+
+前端修改
+
+先准备 `web-worker`
+`frontend/public` 目录下放 [spark-md5.min.js](https://unpkg.com/spark-md5@3.0.2/spark-md5.min.js) 和 `hash.js`
+`hash.js`内容如下
+
+```js
+// web-worker
+self.importScripts('spark-md5.min.js')
+
+self.onmessage = (e) => {
+    // 接受主线程的通知
+    const { file, chunkSize = 5 * 1024 * 1024 } = e.data
+    const spark = new self.SparkMD5.ArrayBuffer()
+    const reader = new FileReader()
+    const size = file.size
+    const offset = chunkSize
+    let chunks = [file.slice(0, offset)]
+    let cur = offset
+    while (cur < size) {
+        // 最后一块全部加进来
+        if (cur + offset >= size) {
+            chunks.push(file.slice(cur, cur + offset))
+        } else {
+            // 中间的 前中后取两个字节
+            const mid = cur + offset / 2
+            const end = cur + offset
+            chunks.push(file.slice(cur, cur + 2))
+            chunks.push(file.slice(mid, mid + 2))
+            chunks.push(file.slice(end - 2, end))
+        }
+        cur += offset
+    }
+    // 拼接
+    reader.readAsArrayBuffer(new Blob(chunks))
+    reader.onload = (e) => {
+        spark.append(e.target.result)
+        self.postMessage({
+            hashMd5: spark.end()
+        })
+    }
+}
+```
+
+在 `frontend/src/utils.ts` 中加一个方法去使用 `web-worker` 计算md5
+
+```ts
+export async function calculateHash(file: Blob, fileName: string, chunkSize = 5 * 1024 * 1024) {
+    return new Promise<string>(resolve => {
+            // web-worker 防止卡顿主线程
+            const worker = new Worker('/hash.js')
+            worker.postMessage({ file, chunkSize })
+            worker.onmessage = e => {
+              const hashMd5: string = e.data.hashMd5
+              if (hashMd5) {
+                resolve(hashMd5)
+                worker.terminate()
+              }
+            }
+    })
+}
+```
+
+最后调整一下 `frontend/src/App.tsx`
+在 `handleUpload` 文件切片之前调用 `verify` 接口，参数是文件名和md5值，来判断该文件是否已经上传过了。
+如果已经上传过了就打上标记，在上传切片 `uploadChunks` 方法中就过滤掉上传过的文件不处理。
+调整一下UI展示，根据标记来展示哪个文件是秒传的
+![frontHandleUpload](./showImg/5.2frontHandleUpload.png)
+![frontUploadChunks](./showImg/5.3frontUploadChunks.png)
+![frontThunderUpload](./showImg/5.4frontThunderUpload.png)
+
+试验一下，我们把后端上传文件和 `bigfile` 记录清理一下
+重新上传视频文件，可以看到新的 `bigfile` 中已经保存了 `md5` 了
+![strapiHashMd5](./showImg/5.5strapiHashMd5.png)
+接着第二次上传该视频文件，前端就提示秒传了该文件
+![frontUploadMessage](./showImg/5.6frontUploadMessage.png)

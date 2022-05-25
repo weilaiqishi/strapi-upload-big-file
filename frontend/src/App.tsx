@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Upload, message, Button, Progress, Card, List, Drawer, Table } from 'antd';
 import { RcFile } from 'antd/lib/upload';
 import { UploadFile } from 'antd/lib/upload/interface';
-import { UploadOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { UploadOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import axios from 'axios'
 import { useAntdTable, useEventEmitter } from 'ahooks'
 import { EventEmitter } from 'ahooks/lib/useEventEmitter'
@@ -43,6 +43,7 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
     percent: number
     chunkName: string
     fileName: string
+    hasSameFile: boolean
   }
   type typeProgressEvent = {
     total: number
@@ -50,11 +51,29 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
   }
   const refFileListCooked = useRef<typeFileListCookedItem[]>([])
   const [totalProgress, settotalProgress] = useState(0)
-  const handleUpload = () => { // 正式上传
+  const handleUpload = async () => { // 正式上传
     if (!fileList.length) return
+    setuploading(true)
     refFileListCooked.current = []
     settotalProgress(0)
-    fileList.forEach(fileItem => {
+    const promiseArr = fileList.map((fileItem) => (async () => {
+      const { data: { data: { hasSameFile } } } = await axios({
+        url: 'http://localhost:1337/api/bigfile/verify',
+        method: 'POST',
+        data: { fileName: fileItem.name, hashMd5: await utils.calculateHash(fileItem, fileItem.name) },
+      })
+      if (hasSameFile) {
+        const fileListCookedItem = {
+          file: fileItem,
+          size: fileItem.size,
+          percent: 100,
+          chunkName: fileItem.name,
+          fileName: fileItem.name,
+          hasSameFile
+        }
+        refFileListCooked.current.push(fileListCookedItem)
+        return
+      }
       const chunkList = createChunk(fileItem)
       console.log(`handleUpload -> ${fileItem.name} chunkList -> `, chunkList) // 看看chunkList长什么样子
       refFileListCooked.current.push( // 处理切片信息
@@ -64,37 +83,52 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
           percent: 0,
           chunkName: `${fileItem.name}-${index}`,
           fileName: fileItem.name,
+          hasSameFile
         }))
       )
-    })
+    }
+    )())
+    await Promise.all(promiseArr)
     uploadChunks() // 执行上传切片的操作
   }
 
   function uploadChunks() {
-    setuploading(true)
+    refFileListCooked.current
+      .filter(({ hasSameFile }) => hasSameFile === true)
+      .forEach(fileListCookedItem => progressHandler({ loaded: 100, total: 100 }, fileListCookedItem)) // 秒传进度直接100
     const requestList = refFileListCooked.current
-      .map(({ file, fileName, chunkName }) => {
+      .filter(({ hasSameFile }) => hasSameFile === false)
+      .map((fileListCookedItem) => {
+        const { file, fileName, chunkName } = fileListCookedItem
         const formData = new FormData();
         formData.append('file', file);
         formData.append('fileName', fileName);
         formData.append('chunkName', chunkName);
-        return { formData };
+        return { formData, fileListCookedItem };
       })
-      .map(({ formData }, index) =>
+      .map(({ formData, fileListCookedItem }, index) =>
         () => utils.axiosUpload(
           'http://localhost:1337/api/bigfile/upload',
           formData,
-          (progressEvent: typeProgressEvent) => progressHandler(progressEvent, refFileListCooked.current[index]), // 传入监听上传进度回调
+          (progressEvent: typeProgressEvent) => progressHandler(progressEvent, fileListCookedItem), // 传入监听上传进度回调
         )
       )
     utils.asyncPool(requestList, 5, async () => {
+      const needUploadFiles = fileList.filter( // 过滤掉秒传文件，非秒传文件在切片上传完后才需要请求 megre
+        rcFile => refFileListCooked.current.some(
+          fileListCookedItem => (rcFile.name === fileListCookedItem.fileName) && fileListCookedItem.hasSameFile
+        ) === false
+      )
       const res = await Promise.allSettled(
-        fileList.map(
-          fileItem => axios({
-            url: 'http://localhost:1337/api/bigfile/megre',
-            method: 'POST',
-            data: { fileName: fileItem.name, size: fileItem.size, chunkSize: 5 * 1024 * 1024 },
-          })
+        needUploadFiles.map(
+          (fileItem) => (async () => {
+            const hashMd5 = await utils.calculateHash(fileItem, fileItem.name)
+            return axios({
+              url: 'http://localhost:1337/api/bigfile/megre',
+              method: 'POST',
+              data: { fileName: fileItem.name, size: fileItem.size, chunkSize: 5 * 1024 * 1024, hashMd5 },
+            })
+          })()
         )
       )
       const success = res.reduce((prev, cur) => {
@@ -104,7 +138,7 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
         }
         return prev
       }, 0)
-      message.success(`上传成功${success}个，失败${fileList.length - success}个`)
+      message.success(`上传成功${success}个，失败${needUploadFiles.length - success}个，秒传${refFileListCooked.current.filter(({ hasSameFile }) => hasSameFile).length}个`)
       setuploading(false)
       setfileList([])
       eventBus.emit({ type: 'uploaded' })
@@ -142,7 +176,17 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
           <List style={{ overflowY: 'auto', height: '100%' }}>
             {
               refFileListCooked.current.map(item => <List.Item key={item.chunkName}>
-                <List.Item.Meta title={item.chunkName + ':'} description={<Progress percent={item.percent}></Progress>}></List.Item.Meta>
+                <List.Item.Meta
+                  title={<p>
+                    {item.chunkName + ':'}
+                    {item.hasSameFile &&
+                      <span style={{ marginLeft: 10, color: '#1890ff', fontSize: 16, fontWeight: 600 }}>
+                        <ThunderboltOutlined />
+                        秒传
+                      </span>
+                    }
+                  </p>}
+                  description={<Progress percent={item.percent}></Progress>}></List.Item.Meta>
               </List.Item>
               )
             }
@@ -175,7 +219,7 @@ const BigfileList = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
 
   eventBus.useSubscription((val) => {
     console.log(val)
-    if(val?.type === 'uploaded') {
+    if (val?.type === 'uploaded') {
       tableProps.onChange({ current: 1 })
     }
   })
