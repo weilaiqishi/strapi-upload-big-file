@@ -65,6 +65,7 @@ yarn add antd axios
 这个方法是大文件能够切片的原理，可以利用这个方法来给打文件切片
 
 > 基础知识
+>
 > file对象属性
 >
 > - size 表示二进制对象的大小
@@ -263,12 +264,14 @@ Koa 提供一个 Context 对象，表示一次对话的上下文（包括 HTTP �
 然后我们利用 Node.js工具库 [fs-extra](https://github.com/jprichardson/node-fs-extra) 把文件保存到指定目录
 
 > 基础知识
+>
 > fs-extra
+>
 > 加强版的 fs（node 文件系统模块），为 fs 方法添加了 Promise 支持。它还使用 graceful-fs 来防止 EMFILE 错误。
 >
 > - existsSync(path)。通过检查文件系统来测试给定路径是否存在。在本项目后端用来判断切片文件夹是否存在。
 > - mkdirs(dir[, options])。确保目录存在。如果目录结构不存在，则创建它。如果提供选项可以为目录指定所需的模式。本项目用来创建切片目录。
-> - move(src, dest[, options][, callback])。移动文件或目录。本项目用来保存切片文件，`koa` 使用 `koa-body` 中间件去解析HTTP请求，`koa-body` 又使用 `formidable` 库去解析 `multipart` 类型的请求数据，`formidable` 里面主要是 `incoming_form` 去处理上传文件，保存文件的目录默认会放到操作系统临时文件的默认目录路径（例：C:\Users\92557\AppData\Local\Temp\upload_588798dac13c4e02deb01d5355cf02b9），所以我们会移动文件到后端项目文件夹中。
+> - move(src, dest[, options][, callback])。移动文件或目录。本项目用来保存切片文件，`koa` 使用 `koa-body` 中间件去解析HTTP请求，`koa-body` 又使用 `formidable` 库去解析 `multipart` 类型的请求数据，`formidable` 里面主要是 `incoming_form` 去处理上传文件，保存文件的目录默认会放到操作系统临时文件的默认目录路径（例：C:\Users\92557\AppData\Local\Temp\upload_588798dac13c4e02deb01d5355cf02b9），所以我们会移动文件到后端项目文件夹中。以下为 `formidable` 处理默认路径的代码。
 > this.uploadDir = opts.uploadDir || (os.tmpdir && os.tmpdir()) || os.tmpDir();
 > IncomingForm.prototype._uploadPath = function(filename) {
 >   var buf = crypto.randomBytes(16);
@@ -1809,6 +1812,8 @@ export default App;
 把之前的上传记录和文件清除一下，上传一个文件并测试一下暂停续传
 
 ![frontUploadPauseXhr](./showImg/6.1frontUploadPauseXhr.png)
-![2frontUploadAxiosCancel](./showImg/6.2frontUploadAxiosCancel.png)
+![frontUploadAxiosCancel](./showImg/6.2frontUploadAxiosCancel.png)
 
 这里可以看到已经开始上传的请求并没有取消
+
+小问题就先不解决了，本次学习大文件上传到此结束
