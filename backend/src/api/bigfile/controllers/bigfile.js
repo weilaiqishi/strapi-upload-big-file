@@ -119,11 +119,19 @@ module.exports = createCoreController('api::bigfile.bigfile', ({ strapi }) => ({
                 hasSameFile = true
             }
         }
+
+        const createUploadedList = async fileName => // 返回已经上传切片名列表
+            fse.existsSync(path.resolve(UPLOAD_DIR, fileName))
+                ? await fse.readdir(path.resolve(UPLOAD_DIR, fileName))
+                : []
+        const uploadedList = await createUploadedList(`${fileName}-chunks`)
+
         return {
             code: 0,
             errMessage: '',
             data: {
-                hasSameFile
+                hasSameFile,
+                uploadedList
             }
         }
     }

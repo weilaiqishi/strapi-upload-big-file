@@ -26,6 +26,7 @@ function createChunk(file: RcFile, size = 5 * 1024 * 1024) {
 
 const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
   const [uploading, setuploading] = useState(false)
+  const [stopping, setstopping] = useState(false)
   const [fileList, setfileList] = useState<RcFile[]>([])
   const beforeUpload = (selectFile: RcFile, selectFileList: RcFile[]) => { // 选中文件
     setfileList([...fileList, ...selectFileList])
@@ -43,7 +44,8 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
     percent: number
     chunkName: string
     fileName: string
-    hasSameFile: boolean
+    hasSameFile: boolean,
+    isUploadedChunk: boolean
   }
   type typeProgressEvent = {
     total: number
@@ -54,10 +56,13 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
   const handleUpload = async () => { // 正式上传
     if (!fileList.length) return
     setuploading(true)
+    setstopping(false)
     refFileListCooked.current = []
-    settotalProgress(0)
+    if (totalProgress === 100) { // 满进度重新上传时重置 // 续传进度不重置
+      settotalProgress(0)
+    }
     const promiseArr = fileList.map((fileItem) => (async () => {
-      const { data: { data: { hasSameFile } } } = await axios({
+      const { data: { data: { hasSameFile, uploadedList } } } = await axios({
         url: 'http://localhost:1337/api/bigfile/verify',
         method: 'POST',
         data: { fileName: fileItem.name, hashMd5: await utils.calculateHash(fileItem, fileItem.name) },
@@ -69,7 +74,8 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
           percent: 100,
           chunkName: fileItem.name,
           fileName: fileItem.name,
-          hasSameFile
+          hasSameFile,
+          isUploadedChunk: false
         }
         refFileListCooked.current.push(fileListCookedItem)
         return
@@ -77,14 +83,18 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
       const chunkList = createChunk(fileItem)
       console.log(`handleUpload -> ${fileItem.name} chunkList -> `, chunkList) // 看看chunkList长什么样子
       refFileListCooked.current.push( // 处理切片信息
-        ...chunkList.map(({ file }, index) => ({
-          file,
-          size: file.size,
-          percent: 0,
-          chunkName: `${fileItem.name}-${index}`,
-          fileName: fileItem.name,
-          hasSameFile
-        }))
+        ...chunkList.map(({ file }, index) => {
+          const chunkName = `${fileItem.name}-${index}`
+          return {
+            file,
+            size: file.size,
+            percent: 0,
+            chunkName,
+            fileName: fileItem.name,
+            hasSameFile: false,
+            isUploadedChunk: (uploadedList as string[]).some(item => chunkName === item)
+          }
+        })
       )
     }
     )())
@@ -92,12 +102,13 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
     uploadChunks() // 执行上传切片的操作
   }
 
+  const refCancelTokenSource = useRef(axios.CancelToken.source())
   function uploadChunks() {
     refFileListCooked.current
-      .filter(({ hasSameFile }) => hasSameFile === true)
-      .forEach(fileListCookedItem => progressHandler({ loaded: 100, total: 100 }, fileListCookedItem)) // 秒传进度直接100
+      .filter(({ hasSameFile, isUploadedChunk }) => hasSameFile === true || isUploadedChunk === true)
+      .forEach(fileListCookedItem => progressHandler({ loaded: 100, total: 100 }, fileListCookedItem)) // 秒传文件 或 暂停已上传切片 进度直接100
     const requestList = refFileListCooked.current
-      .filter(({ hasSameFile }) => hasSameFile === false)
+      .filter(({ hasSameFile, isUploadedChunk }) => !(hasSameFile === true || isUploadedChunk === true))
       .map((fileListCookedItem) => {
         const { file, fileName, chunkName } = fileListCookedItem
         const formData = new FormData();
@@ -111,6 +122,7 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
           'http://localhost:1337/api/bigfile/upload',
           formData,
           (progressEvent: typeProgressEvent) => progressHandler(progressEvent, fileListCookedItem), // 传入监听上传进度回调
+          refCancelTokenSource.current.token
         )
       )
     utils.asyncPool(requestList, 5, async () => {
@@ -154,6 +166,12 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
     )
   }
 
+  function pauseUpload() {
+    refCancelTokenSource.current.cancel('暂停')
+    refCancelTokenSource.current = axios.CancelToken.source() // 生成下次用的CancelToken
+    setstopping(true)
+  }
+
   return (
     <>
       <Upload fileList={fileList} beforeUpload={beforeUpload} onRemove={onRemove} customRequest={() => { }} multiple>
@@ -168,6 +186,16 @@ const UpLoadComponent = ({ eventBus }: { eventBus: EventEmitter<any> }) => {
       >
         {uploading ? 'Uploading' : 'Start Upload'}
       </Button>
+      {
+        uploading && <Button
+          type='primary'
+          onClick={stopping ? handleUpload : pauseUpload}
+          style={{ marginTop: 16, width: '200px', background: '#FFBA84', color: '#000000' }}
+        >
+          {stopping ? '续传' : '暂停'}
+        </Button>
+      }
+
       <div style={{ display: 'flex', flexDirection: 'column', marginTop: 16, width: '600px', height: '600px' }}>
         <Card title='总进度:' style={{ width: '100%' }} headStyle={{ fontWeight: 'bold' }}>
           <Progress percent={totalProgress}></Progress>

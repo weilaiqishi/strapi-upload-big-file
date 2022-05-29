@@ -1,10 +1,11 @@
-import axios, { AxiosRequestConfig } from 'axios'
+import axios, { AxiosRequestConfig, CancelToken } from 'axios'
 import { useState, useRef, useEffect } from 'react'
 
 export function axiosUpload(
     url: string,
     data: FormData,
     onUploadProgress: AxiosRequestConfig['onUploadProgress'], // 进度回调
+    cancelToken: CancelToken
 ) {
     return new Promise((resolve, reject) => {
         axios({
@@ -12,6 +13,7 @@ export function axiosUpload(
             method: 'POST',
             data,
             onUploadProgress, // 传入监听进度回调
+            cancelToken
         })
             .then((res) => {
                 resolve(res);
