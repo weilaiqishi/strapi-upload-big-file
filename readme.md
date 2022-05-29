@@ -1,12 +1,32 @@
 # 大文件上传
 
-使用 strapi.js 和 React 实现大文件上传
+学习一下实现大文件上传
 
-参考文章
+github: <https://github.com/weilaiqishi/strapi-upload-big-file>
+前端: React + Antd
+服务端: Nodejs@16 + strapi(基于Koa的后端框架)
 
-- [「记录优化」我是如何在项目中实现大文件分片上传，暂停续传的](https://juejin.cn/post/6982877680068739085)
-- [字节跳动面试官：请你实现一个大文件上传和断点续传](https://juejin.cn/post/6844904046436843527)
-- [字节跳动面试官，我也实现了大文件上传和断点续传](https://juejin.cn/post/6844904055819468808)
+启动后端
+
+```bash
+cd backend
+yarn
+yarn develop
+```
+
+启动前端
+
+```bash
+cd frontend
+yarn
+yarn start
+```
+
+> 参考文章
+>
+> - [「记录优化」我是如何在项目中实现大文件分片上传，暂停续传的](https://juejin.cn/post/6982877680068739085)
+> - [字节跳动面试官：请你实现一个大文件上传和断点续传](https://juejin.cn/post/6844904046436843527)
+> - [字节跳动面试官，我也实现了大文件上传和断点续传](https://juejin.cn/post/6844904055819468808)
 
 ## 大致流程
 
@@ -241,6 +261,30 @@ Koa 提供一个 Context 对象，表示一次对话的上下文（包括 HTTP �
 通过阅读 `strapi` 自带上传功能的代码 `backend/node_modules/@strapi/plugin-upload/server/controllers/content-api.js`，
 可以知道 `ctx.request.files` 可以获得上传的文件对象
 然后我们利用 Node.js工具库 [fs-extra](https://github.com/jprichardson/node-fs-extra) 把文件保存到指定目录
+
+> 基础知识
+> fs-extra
+> 加强版的 fs（node 文件系统模块），为 fs 方法添加了 Promise 支持。它还使用 graceful-fs 来防止 EMFILE 错误。
+>
+> - existsSync(path)。通过检查文件系统来测试给定路径是否存在。在本项目后端用来判断切片文件夹是否存在。
+> - mkdirs(dir[, options])。确保目录存在。如果目录结构不存在，则创建它。如果提供选项可以为目录指定所需的模式。本项目用来创建切片目录。
+> - move(src, dest[, options][, callback])。移动文件或目录。本项目用来保存切片文件，`koa` 使用 `koa-body` 中间件去解析HTTP请求，`koa-body` 又使用 `formidable` 库去解析 `multipart` 类型的请求数据，`formidable` 里面主要是 `incoming_form` 去处理上传文件，保存文件的目录默认会放到操作系统临时文件的默认目录路径（例：C:\Users\92557\AppData\Local\Temp\upload_588798dac13c4e02deb01d5355cf02b9），所以我们会移动文件到后端项目文件夹中。
+> this.uploadDir = opts.uploadDir || (os.tmpdir && os.tmpdir()) || os.tmpDir();
+> IncomingForm.prototype._uploadPath = function(filename) {
+>   var buf = crypto.randomBytes(16);
+>   var name = 'upload_' + buf.toString('hex');
+>   if (this.keepExtensions) {
+>     var ext = path.extname(filename);
+>     ext     = ext.replace(/(\.[a-z0-9]+).*/i, '$1');
+>     name += ext;
+>   }
+>   return path.join(this.uploadDir, name);
+> };
+> - createReadStream(path[, options])。创建可读流，与 `stream.Readable` 的 16 KiB 默认 highWaterMark 不同，此方法返回的流的默认 highWaterMark 为 64 KiB。
+> - unlinkSync(path)。删除文件或符号链接，不会在目录上工作，无论是空的还是其他的。要删除目录，请使用 fs.rmdir()。总的来说就是删除单个文件。本项目用来删除切片文件。
+> - readdir(path[, options], callback)。用于异步读取给定目录的内容。此方法的回调返回目录中所有文件名的数组。本项目在文件续传中读取已上传的切片列表。
+> - createWriteStream(path[, options])。创建可写流。
+> - rmdirSync(path[, options])。删除目录。本项目用来删除切片目录。
 
 我们先写 bigfile 的 `controllers`
 
